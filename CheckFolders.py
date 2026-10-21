@@ -42,6 +42,7 @@ CONFIG_FILE = APP_DIR / "CheckFolders.json"
 
 DEFAULT_CONFIG = {
     "timer": 10,
+    "notify_mode": "all", 
     "folders": [
         {"path": r"F:\GU\CUKS\In",                        "filter": "*.cry", "enabled": True},
         {"path": r"\\Comp-01\sfr-fns\311\InputFNS",       "filter": "*.*",   "enabled": True},
@@ -105,34 +106,44 @@ class FolderScanner(threading.Thread):
             return None
 
     def run(self):
-        # первичный снимок — чтобы не было лавины уведомлений
-        for folder in list(self.config.data.get("folders", [])):
-            if folder.get("enabled", True):
-                files = self._scan(folder)
-                if files is not None:
-                    self._known[folder["path"]] = files
-        self.log("Начальное сканирование завершено. Мониторинг запущен.")
-
+        self.log("Мониторинг запущен.")
+        import traceback
         while not self._stop.is_set():
-            timer = max(1, int(self.config.data.get("timer", 10)))
-            # ждём, но с возможностью мгновенно прерваться
-            for _ in range(timer * 10):
-                if self._stop.is_set():
-                    return
-                time.sleep(0.1)
+            try:
+                timer = max(1, int(self.config.data.get("timer", 10)))
+                for _ in range(timer * 10):
+                    if self._stop.is_set():
+                        return
+                    time.sleep(0.1)
 
-            for folder in list(self.config.data.get("folders", [])):
-                if not folder.get("enabled", True):
-                    continue
-                path = folder["path"]
-                files = self._scan(folder)
-                if files is None:
-                    continue
-                known = self._known.get(path, set())
-                new_files = files - known
-                if new_files:
-                    self.on_new_files(path, sorted(new_files))
-                self._known[path] = files
+                mode = self.config.data.get("notify_mode", "all")
+                folders = list(self.config.data.get("folders", []))
+                found_total = 0
+
+                for folder in folders:
+                    if not folder.get("enabled", True):
+                        continue
+                    path = folder["path"]
+                    files = self._scan(folder)
+                    if files is None:
+                        continue
+                    found_total += len(files)
+
+                    if mode == "all":
+                        if files:
+                            self.on_new_files(path, sorted(files))
+                    else:
+                        known = self._known.get(path, set())
+                        new_files = files - known
+                        if new_files:
+                            self.on_new_files(path, sorted(new_files))
+                        self._known[path] = files
+
+                # heartbeat: видно, что цикл идёт и сколько файлов видит
+                self.log(f"[heartbeat] папок: {len(folders)}, подходящих файлов: {found_total}")
+            except Exception:
+                self.log("!!! Сканер упал:\n" + traceback.format_exc())
+                time.sleep(5)
 
 
 class FolderDialog:
@@ -162,6 +173,8 @@ class FolderDialog:
         btnf.grid(row=3, column=0, columnspan=3, pady=12)
         ttk.Button(btnf, text="OK", command=self._ok).pack(side=tk.LEFT, padx=5)
         ttk.Button(btnf, text="Отмена", command=self.top.destroy).pack(side=tk.LEFT)
+
+        self.top.wait_window() 
 
     def _browse(self):
         p = filedialog.askdirectory()
@@ -208,7 +221,15 @@ class App:
         ttk.Button(top, text="Применить", command=self.apply_timer).pack(side=tk.LEFT)
         self.status_var = tk.StringVar(value="Мониторинг активен")
         ttk.Label(top, textvariable=self.status_var, foreground="#2a7").pack(side=tk.LEFT, padx=20)
-
+        
+        self.spam_var = tk.BooleanVar(value=self.config.data.get("notify_mode", "all") == "all")
+        ttk.Checkbutton(
+            top,
+            text="Повторять уведомления (спам)",
+            variable=self.spam_var,
+            command=self._toggle_mode,
+        ).pack(side=tk.LEFT, padx=10)
+        
         mid = ttk.Frame(self.root, padding=8)
         mid.pack(fill=tk.BOTH, expand=True)
         cols = ("path", "filter", "enabled")
@@ -250,6 +271,10 @@ class App:
         except Exception:
             pass
 
+    def _toggle_mode(self):
+        self.config.data["notify_mode"] = "all" if self.spam_var.get() else "new"
+        self._log(f"Режим уведомлений: {'все файлы' if self.spam_var.get() else 'только новые'}")
+
     def _reload_tree(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
@@ -273,6 +298,7 @@ class App:
         if dlg.result:
             self.config.data["folders"].append(dlg.result)
             self._reload_tree()
+            self.config.save() # <-- Автосохранение
             self._log(f"Добавлена папка: {dlg.result['path']}")
 
     def edit_folder(self):
@@ -284,6 +310,8 @@ class App:
         if dlg.result:
             self.config.data["folders"][idx] = dlg.result
             self._refresh_row(idx)
+            self.config.save() # <-- Автосохранение
+            self._log(f"Изменена папка: {dlg.result['path']}")
 
     def remove_folder(self):
         sel = self.tree.selection()
@@ -293,6 +321,7 @@ class App:
         if messagebox.askyesno("Удалить", f"Удалить папку?\n{self.config.data['folders'][idx]['path']}"):
             del self.config.data["folders"][idx]
             self._reload_tree()
+            self.config.save() # <-- Автосохранение
 
     def toggle_folder(self):
         sel = self.tree.selection()
@@ -302,6 +331,7 @@ class App:
         f = self.config.data["folders"][idx]
         f["enabled"] = not f.get("enabled", True)
         self._refresh_row(idx)
+        self.config.save() # <-- Автосохранение
 
     # ---------- settings ----------
     def apply_timer(self):
@@ -324,19 +354,41 @@ class App:
 
     # ---------- notifications ----------
     def _notify(self, title, message):
+        # 1) звук — слышен даже если тосты глушатся системой
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+
+        # 2) мигание окна в панели задач (если свернуто в трей — не сработает,
+        #    но если окно есть — привлечёт внимание)
+        try:
+            self.root.after(0, lambda: self.root.bell())
+        except Exception:
+            pass
+
+        # 3) winotify
         if HAS_WINOTIFY:
             try:
-                Notification(app_id=APP_NAME, title=title, msg=message, duration="short").show()
+                Notification(app_id=APP_NAME, title=title,
+                             msg=message, duration="short").show()
                 return
             except Exception as e:
                 self._log(f"winotify: {e}")
+
+        # 4) pystray toast
         if HAS_TRAY and self.tray:
             try:
                 self.tray.notify(message, title)
                 return
             except Exception as e:
                 self._log(f"tray notify: {e}")
-        self.root.after(0, lambda: messagebox.showinfo(title, message))
+
+        # 5) messagebox — самый надёжный, но модальный
+        #    (не показываем в спам-режиме, чтобы не блокировать)
+        if not self.spam_var.get():
+            self.root.after(0, lambda: messagebox.showinfo(title, message))
 
     def test_notify(self):
         self._notify("Проверка", "Это тестовое уведомление")
@@ -350,6 +402,7 @@ class App:
             msg = f"{path}\nНовых файлов: {len(files)}\n{head}{tail}"
         self._log(f"[{path}] новые: {', '.join(files)}")
         self._notify("Новые файлы", msg)
+        self._log(f"[{path}] _notify вызван")
 
     # ---------- lifecycle ----------
     def _start_scanner(self):

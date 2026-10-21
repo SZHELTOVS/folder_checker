@@ -1,0 +1,41 @@
+{
+  "timer": 600,
+  "notify_mode": "all",
+  "folders": [
+    {
+      "path": "F:\\GU\\CUKS\\In",
+      "filter": "*.cry",
+      "enabled": true
+    },
+    {
+      "path": "\\\\Comp-01\\sfr-fns\\311\\InputFNS",
+      "filter": "*.*",
+      "enabled": true
+    },
+    {
+      "path": "\\\\Comp-01\\sfr-fns\\311\\InputSFR",
+      "filter": "*.*",
+      "enabled": true
+    },
+    {
+      "path": "\\\\Comp-01\\sfr-fns\\440\\Input440",
+      "filter": "*.*",
+      "enabled": true
+    },
+    {
+      "path": "\\\\Comp-01\\sfr-fns\\440\\Input440ENS",
+      "filter": "*.xml",
+      "enabled": true
+    },
+    {
+      "path": "F:\\Finist\\Finist_Exch\\SFR\\IN",
+      "filter": "*.xml",
+      "enabled": true
+    },
+    {
+      "path": "Z:\\TRANSIT\\ProgramBank\\DeathSertificate",
+      "filter": "*.xml",
+      "enabled": true
+    }
+  ]
+}
